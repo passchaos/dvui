@@ -204,19 +204,19 @@ test "DOCIMG easing plots" {
             var plot = dvui.plot(@src(), .{ .x_axis = &x_axis, .y_axis = &y_axis }, .{ .expand = .both });
             defer plot.deinit();
 
-            var x_line = plot.line();
+            var x_line = plot.line("X Axis");
             defer x_line.deinit();
             x_line.point(0, 0);
             x_line.point(1, 0);
             x_line.stroke(1, dvui.Color.black);
 
-            var y_line = plot.line();
+            var y_line = plot.line("Y Axis");
             defer y_line.deinit();
             y_line.point(0, 0);
             y_line.point(0, 1);
             y_line.stroke(1, dvui.Color.black);
 
-            var line = plot.line();
+            var line = plot.line("Easing");
             defer line.deinit();
             for (0..resolution) |i| {
                 const x = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(resolution));

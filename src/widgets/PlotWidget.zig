@@ -14,6 +14,8 @@ mouse_point: ?Point.Physical = null,
 hover_data: ?HoverData = null,
 data_min: Data = .{ .x = std.math.floatMax(f64), .y = std.math.floatMax(f64) },
 data_max: Data = .{ .x = -std.math.floatMax(f64), .y = -std.math.floatMax(f64) },
+items: ?std.array_list.Managed(PlotItem) = null,
+legend_enabled: bool = false,
 
 pub var defaults: Options = .{
     .name = "Plot",
@@ -32,6 +34,7 @@ pub const InitOptions = struct {
     border_thick: ?f32 = null,
     spine_color: ?dvui.Color = null,
     mouse_hover: bool = false,
+    legend_enabled: bool = false,
     was_allocated_on_widget_stack: bool = false,
 };
 
@@ -333,9 +336,26 @@ pub const Data = struct {
     y: f64,
 };
 
+pub const PlotItem = struct {
+    name: []const u8,
+    color: dvui.Color,
+    item_type: ItemType,
+    visible: bool = true,
+    hovered: bool = false,
+
+    pub const ItemType = enum {
+        line,
+        scatter,
+        bar,
+        area,
+    };
+};
+
 pub const Line = struct {
     plot: *PlotWidget,
     path: dvui.Path.Builder,
+    name: []const u8,
+    color: dvui.Color,
 
     pub fn point(self: *Line, x: f64, y: f64) void {
         const data_point: Data = .{ .x = x, .y = y };
@@ -352,11 +372,216 @@ pub const Line = struct {
     }
 
     pub fn stroke(self: *Line, thick: f32, color: dvui.Color) void {
-        self.path.build().stroke(.{ .thickness = thick * self.plot.data_rs.s, .color = color });
+        self.color = color;
+        // Update color in plot's items list
+        var is_visible = true;
+        var is_hovered = false;
+        if (self.plot.items) |items| {
+            for (items.items) |*item| {
+                if (std.mem.eql(u8, item.name, self.name)) {
+                    item.color = color;
+                    // Get visible state from data storage
+                    const base_id = self.plot.box.data().id;
+                    const legend_id = base_id.update("legend");
+                    const item_id = legend_id.update(item.name);
+                    is_visible = dvui.dataGet(null, item_id, "visible", bool) orelse true;
+                    item.visible = is_visible;
+                    // Check if mouse is hovering over this item's legend
+                    is_hovered = self.plot.isLegendItemHovered(item.name);
+                    item.hovered = is_hovered;
+                    break;
+                }
+            }
+        }
+        // Only draw if visible
+        if (is_visible) {
+            // Increase thickness when hovered
+            const hover_scale: f32 = if (is_hovered) 1.5 else 1.0;
+            self.path.build().stroke(.{ .thickness = thick * self.plot.data_rs.s * hover_scale, .color = color });
+        }
     }
 
     pub fn deinit(self: *Line) void {
         // The Line "widget" intentionally doesn't call `dvui.widgetFree` as it should always be created by `PlotWidget.line`
+        defer self.* = undefined;
+        self.path.deinit();
+    }
+};
+
+pub const Scatter = struct {
+    plot: *PlotWidget,
+    points: std.array_list.Managed(Data),
+    screen_points: std.array_list.Managed(Point.Physical),
+    name: []const u8,
+    color: dvui.Color,
+
+    pub fn point(self: *Scatter, x: f64, y: f64) void {
+        const data_point: Data = .{ .x = x, .y = y };
+        self.plot.dataForRange(data_point);
+        const screen_p = self.plot.dataToScreen(data_point);
+
+        self.points.append(data_point) catch unreachable;
+        self.screen_points.append(screen_p) catch unreachable;
+
+        if (self.plot.mouse_point) |mp| {
+            const dp = Point.Physical.diff(mp, screen_p);
+            const dps = dp.toNatural();
+            if (@abs(dps.x) <= 5 and @abs(dps.y) <= 5) {
+                self.plot.hover_data = .{ .point = data_point };
+            }
+        }
+    }
+
+    pub fn draw(self: *Scatter, radius: f32, color: dvui.Color) void {
+        self.color = color;
+        // Update color in plot's items list
+        var is_visible = true;
+        var is_hovered = false;
+        if (self.plot.items) |items| {
+            for (items.items) |*item| {
+                if (std.mem.eql(u8, item.name, self.name)) {
+                    item.color = color;
+                    // Get visible state from data storage
+                    const base_id = self.plot.box.data().id;
+                    const legend_id = base_id.update("legend");
+                    const item_id = legend_id.update(item.name);
+                    is_visible = dvui.dataGet(null, item_id, "visible", bool) orelse true;
+                    item.visible = is_visible;
+                    // Check if mouse is hovering over this item's legend
+                    is_hovered = self.plot.isLegendItemHovered(item.name);
+                    item.hovered = is_hovered;
+                    break;
+                }
+            }
+        }
+        // Only draw if visible
+        if (is_visible) {
+            // Increase radius when hovered
+            const hover_scale: f32 = if (is_hovered) 1.5 else 1.0;
+            for (self.screen_points.items) |screen_p| {
+                const r = radius * self.plot.data_rs.s * hover_scale;
+                var circle_path = dvui.Path.Builder.init(dvui.currentWindow().lifo());
+                defer circle_path.deinit();
+                circle_path.addArc(screen_p, r, std.math.pi * 2, 0, false);
+                circle_path.build().fillConvex(.{ .color = color });
+            }
+        }
+    }
+
+    pub fn deinit(self: *Scatter) void {
+        // The Scatter "widget" intentionally doesn't call `dvui.widgetFree` as it should always be created by `PlotWidget.scatter`
+        defer self.* = undefined;
+        self.points.deinit();
+        self.screen_points.deinit();
+    }
+};
+
+pub const Area = struct {
+    plot: *PlotWidget,
+    path: dvui.Path.Builder,
+    base_y: f64 = 0,
+    name: []const u8,
+    color: dvui.Color,
+
+    pub fn point(self: *Area, x: f64, y: f64) void {
+        const data_point: Data = .{ .x = x, .y = y };
+        self.plot.dataForRange(data_point);
+        const screen_p = self.plot.dataToScreen(data_point);
+        if (self.plot.mouse_point) |mp| {
+            const dp = Point.Physical.diff(mp, screen_p);
+            const dps = dp.toNatural();
+            if (@abs(dps.x) <= 3 and @abs(dps.y) <= 3) {
+                self.plot.hover_data = .{ .point = data_point };
+            }
+        }
+        self.path.addPoint(screen_p);
+    }
+
+    pub fn setBase(self: *Area, y: f64) void {
+        self.base_y = y;
+    }
+
+    pub fn fill(self: *Area, color: dvui.Color) void {
+        self.color = color;
+        // Update color in plot's items list
+        var is_visible = true;
+        if (self.plot.items) |items| {
+            for (items.items) |*item| {
+                if (std.mem.eql(u8, item.name, self.name)) {
+                    item.color = color;
+                    // Get visible state from data storage
+                    const base_id = self.plot.box.data().id;
+                    const legend_id = base_id.update("legend");
+                    const item_id = legend_id.update(item.name);
+                    is_visible = dvui.dataGet(null, item_id, "visible", bool) orelse true;
+                    item.visible = is_visible;
+                    break;
+                }
+            }
+        }
+        // Only draw if visible
+        if (is_visible) {
+            if (self.path.points.items.len < 2) return;
+
+            // Create a copy of the path and add the base line
+            var area_path = dvui.Path.Builder.init(dvui.currentWindow().lifo());
+            defer area_path.deinit();
+
+            // Add all the points in order
+            for (self.path.points.items) |p| {
+                area_path.addPoint(p);
+            }
+
+            // Add the base line points in reverse order
+            for (self.path.points.items) |p| {
+                const data_p = self.plot.screenToData(p);
+                const base_data_point: Data = .{ .x = data_p.x, .y = self.base_y };
+                const base_screen_p = self.plot.dataToScreen(base_data_point);
+                area_path.addPoint(base_screen_p);
+            }
+
+            // Close the path back to the first point
+            if (self.path.points.items.len > 0) {
+                area_path.addPoint(self.path.points.items[0]);
+            }
+
+            // Fill the area
+            area_path.build().fillConvex(.{ .color = color });
+        }
+    }
+
+    pub fn stroke(self: *Area, thick: f32, color: dvui.Color) void {
+        self.color = color;
+        // Update color in plot's items list
+        var is_visible = true;
+        var is_hovered = false;
+        if (self.plot.items) |items| {
+            for (items.items) |*item| {
+                if (std.mem.eql(u8, item.name, self.name)) {
+                    item.color = color;
+                    // Get visible state from data storage
+                    const base_id = self.plot.box.data().id;
+                    const legend_id = base_id.update("legend");
+                    const item_id = legend_id.update(item.name);
+                    is_visible = dvui.dataGet(null, item_id, "visible", bool) orelse true;
+                    item.visible = is_visible;
+                    // Check if mouse is hovering over this item's legend
+                    is_hovered = self.plot.isLegendItemHovered(item.name);
+                    item.hovered = is_hovered;
+                    break;
+                }
+            }
+        }
+        // Only draw if visible
+        if (is_visible) {
+            // Increase thickness when hovered
+            const hover_scale: f32 = if (is_hovered) 1.5 else 1.0;
+            self.path.build().stroke(.{ .thickness = thick * self.plot.data_rs.s * hover_scale, .color = color });
+        }
+    }
+
+    pub fn deinit(self: *Area) void {
+        // The Area "widget" intentionally doesn't call `dvui.widgetFree` as it should always be created by `PlotWidget.area`
         defer self.* = undefined;
         self.path.deinit();
     }
@@ -369,6 +594,21 @@ pub fn dataToScreen(self: *PlotWidget, data_point: Data) dvui.Point.Physical {
         .x = self.data_rs.r.x + xfrac * self.data_rs.r.w,
         .y = self.data_rs.r.y + (1.0 - yfrac) * self.data_rs.r.h,
     };
+}
+
+pub fn screenToData(self: *PlotWidget, screen_point: Point.Physical) Data {
+    const xfrac = (screen_point.x - self.data_rs.r.x) / self.data_rs.r.w;
+    const yfrac = 1.0 - (screen_point.y - self.data_rs.r.y) / self.data_rs.r.h;
+
+    const min_x = self.x_axis.min orelse self.data_min.x;
+    const max_x = self.x_axis.max orelse self.data_max.x;
+    const min_y = self.y_axis.min orelse self.data_min.y;
+    const max_y = self.y_axis.max orelse self.data_max.y;
+
+    const x = min_x + xfrac * (max_x - min_x);
+    const y = min_y + yfrac * (max_y - min_y);
+
+    return .{ .x = x, .y = y };
 }
 
 pub fn dataForRange(self: *PlotWidget, data_point: Data) void {
@@ -384,6 +624,8 @@ pub fn init(self: *PlotWidget, src: std.builtin.SourceLocation, init_opts: InitO
         .src = src,
         .opts = opts,
         .init_options = init_opts,
+        .items = std.array_list.Managed(PlotItem).init(dvui.currentWindow().lifo()),
+        .legend_enabled = init_opts.legend_enabled,
     };
 
     self.box.init(self.src, .{ .dir = .vertical }, defaults.override(self.opts));
@@ -747,11 +989,49 @@ fn drawTickline(
     }
 }
 
-pub fn line(self: *PlotWidget) Line {
+pub fn line(self: *PlotWidget, name: []const u8) Line {
     // NOTE: Should not allocate Line as a stack widget. Line doesn't call `dvui.widgetFree`
+    const result: Line = .{
+        .plot = self,
+        .path = dvui.Path.Builder.init(dvui.currentWindow().lifo()),
+        .name = name,
+        .color = dvui.Color.white,
+    };
+    self.items.?.append(.{ .name = name, .color = dvui.Color.white, .item_type = .line }) catch unreachable;
+    return result;
+}
+
+pub fn scatter(self: *PlotWidget, name: []const u8) Scatter {
+    // NOTE: Should not allocate Scatter as a stack widget. Scatter doesn't call `dvui.widgetFree`
+    const result: Scatter = .{
+        .plot = self,
+        .points = std.array_list.Managed(Data).init(dvui.currentWindow().lifo()),
+        .screen_points = std.array_list.Managed(dvui.Point.Physical).init(dvui.currentWindow().lifo()),
+        .name = name,
+        .color = dvui.Color.white,
+    };
+    self.items.?.append(.{ .name = name, .color = dvui.Color.white, .item_type = .scatter }) catch unreachable;
+    return result;
+}
+
+pub fn area(self: *PlotWidget, name: []const u8) Area {
+    // NOTE: Should not allocate Area as a stack widget. Area doesn't call `dvui.widgetFree`
+    const result: Area = .{
+        .plot = self,
+        .path = dvui.Path.Builder.init(dvui.currentWindow().lifo()),
+        .base_y = 0,
+        .name = name,
+        .color = dvui.Color.white,
+    };
+    self.items.?.append(.{ .name = name, .color = dvui.Color.white, .item_type = .area }) catch unreachable;
+    return result;
+}
+
+pub fn legend(self: *PlotWidget) Legend {
+    // NOTE: Should not allocate Legend as a stack widget. Legend doesn't call `dvui.widgetFree`
     return .{
         .plot = self,
-        .path = .init(dvui.currentWindow().lifo()),
+        .items = std.array_list.Managed(Legend.LegendItem).init(dvui.currentWindow().lifo()),
     };
 }
 
@@ -760,8 +1040,221 @@ pub const BarOptions = struct {
     y: f64,
     w: f64,
     h: f64,
+    name: []const u8 = "Bar",
     color: ?dvui.Color = null,
 };
+
+pub const Legend = struct {
+    plot: *PlotWidget,
+    items: std.array_list.Managed(LegendItem),
+
+    pub const LegendItem = struct {
+        label: []const u8,
+        color: dvui.Color,
+    };
+
+    pub fn item(self: *Legend, label: []const u8, color: dvui.Color) void {
+        self.items.append(.{ .label = label, .color = color }) catch unreachable;
+    }
+
+    pub fn draw(self: *Legend) void {
+        // Auto-collect items from plot
+        self.items.clearRetainingCapacity();
+        if (self.plot.items) |plot_items| {
+            for (plot_items.items) |plot_item| {
+                self.items.append(.{ .label = plot_item.name, .color = plot_item.color }) catch unreachable;
+            }
+        }
+        if (self.items.items.len == 0) return;
+
+        const font = self.plot.box.data().options.fontGet();
+        const text_color = self.plot.box.data().options.color(.text);
+        const padding = dvui.Rect.all(8);
+        const item_spacing = 4.0;
+        const icon_size = dvui.Size.Natural{ .w = 16, .h = 12 };
+
+        // Calculate legend size
+        var max_width: f32 = 0;
+        var total_height: f32 = 0;
+        for (self.items.items) |legend_item| {
+            const text_size = font.textSize(legend_item.label);
+            max_width = @max(max_width, text_size.w + icon_size.w + 8);
+            total_height += @max(text_size.h, icon_size.h) + item_spacing;
+        }
+        total_height -= item_spacing; // Remove last spacing
+
+        // Position legend at top right of plot (physical coordinates)
+        const legend_rect = dvui.Rect.Physical{
+            .x = self.plot.data_rs.r.x + self.plot.data_rs.r.w - (max_width + padding.w + padding.x) * self.plot.data_rs.s,
+            .y = self.plot.data_rs.r.y + (padding.y) * self.plot.data_rs.s,
+            .w = (max_width + padding.w + padding.x) * self.plot.data_rs.s,
+            .h = (total_height + padding.h + padding.y) * self.plot.data_rs.s,
+        };
+
+        // Draw background
+        legend_rect.fill(dvui.Rect.Physical.all(0), .{ .color = self.plot.box.data().options.color(.fill) });
+        legend_rect.stroke(.{}, .{ .thickness = 1 * self.plot.data_rs.s, .color = text_color });
+
+        // Get mouse position
+        const mouse_point = dvui.currentWindow().mouse_pt;
+
+        // Draw items
+        var current_y: f32 = legend_rect.y + (padding.y) * self.plot.data_rs.s;
+        for (self.items.items, 0..) |legend_item, index| {
+            const text_size = font.textSize(legend_item.label);
+            const item_height = @max(text_size.h, icon_size.h) * self.plot.data_rs.s;
+
+            // Calculate item rect for hover detection
+            const item_rect = dvui.Rect.Physical{
+                .x = legend_rect.x,
+                .y = current_y,
+                .w = legend_rect.w,
+                .h = item_height + item_spacing * self.plot.data_rs.s,
+            };
+
+            // Check if mouse is hovering over this item
+            const is_hovered = item_rect.contains(mouse_point);
+
+            // Update hovered state in plot items
+            if (self.plot.items) |plot_items| {
+                if (index < plot_items.items.len) {
+                    plot_items.items[index].hovered = is_hovered;
+                }
+            }
+
+            // Generate unique ID for this legend item
+            const base_id = self.plot.box.data().id;
+            const legend_id = base_id.update("legend");
+            const item_id = legend_id.update(legend_item.label);
+
+            // Handle click events
+            const evts = dvui.events();
+            for (evts) |*e| {
+                if (e.evt == .mouse and e.evt.mouse.action == .press and e.evt.mouse.button == .left) {
+                    if (item_rect.contains(e.evt.mouse.p)) {
+                        // Get current visible state
+                        const current_visible = dvui.dataGet(null, item_id, "visible", bool) orelse true;
+                        // Toggle visible state
+                        const new_visible = !current_visible;
+                        // Save to data storage
+                        dvui.dataSet(null, item_id, "visible", new_visible);
+                    }
+                }
+            }
+
+            // Get visible state from data storage
+            const is_visible = dvui.dataGet(null, item_id, "visible", bool) orelse true;
+
+            // Update plot item's visible state
+            if (self.plot.items) |plot_items| {
+                if (index < plot_items.items.len) {
+                    plot_items.items[index].visible = is_visible;
+                }
+            }
+
+            // Draw color icon
+            const icon_scale: f32 = if (is_hovered) 1.2 else 1.0;
+            const icon_rect = dvui.Rect.Physical{
+                .x = legend_rect.x + (padding.x) * self.plot.data_rs.s,
+                .y = current_y + (item_height - icon_size.h * self.plot.data_rs.s * icon_scale) / 2,
+                .w = icon_size.w * self.plot.data_rs.s * icon_scale,
+                .h = icon_size.h * self.plot.data_rs.s * icon_scale,
+            };
+            // Use gray color if item is not visible
+            const icon_color = if (is_visible) legend_item.color else dvui.Color.gray;
+            icon_rect.fill(dvui.Rect.Physical.all(0), .{ .color = icon_color });
+
+            // Draw label
+            const text_pos = dvui.Point.Physical{
+                .x = icon_rect.x + icon_rect.w + 8 * self.plot.data_rs.s,
+                .y = current_y + (item_height - text_size.h * self.plot.data_rs.s) / 2,
+            };
+            const text_rs = dvui.RectScale{
+                .r = dvui.Rect.Physical.fromPoint(text_pos).toSize(text_size.scale(self.plot.data_rs.s, dvui.Size.Physical)),
+                .s = self.plot.data_rs.s,
+            };
+            // Use gray color if item is not visible
+            const label_color = if (is_visible) text_color else dvui.Color.gray;
+            dvui.renderText(.{
+                .font = font,
+                .text = legend_item.label,
+                .rs = text_rs,
+                .color = label_color,
+            }) catch |err| {
+                dvui.logError(@src(), err, "Failed to render legend text", .{});
+            };
+
+            current_y += item_height + item_spacing * self.plot.data_rs.s;
+        }
+    }
+
+    pub fn deinit(self: *Legend) void {
+        self.items.deinit();
+    }
+};
+
+pub fn isLegendItemHovered(self: *PlotWidget, item_name: []const u8) bool {
+    // Get mouse position
+    const mouse_point = dvui.currentWindow().mouse_pt;
+
+    // Calculate legend position and size
+    const font = self.box.data().options.fontGet();
+    const padding = dvui.Rect.all(8);
+    const item_spacing = 4.0;
+    const icon_size = dvui.Size.Natural{ .w = 16, .h = 12 };
+
+    // Calculate legend size
+    var max_width: f32 = 0;
+    var total_height: f32 = 0;
+    if (self.items) |plot_items| {
+        for (plot_items.items) |plot_item| {
+            const text_size = font.textSize(plot_item.name);
+            max_width = @max(max_width, text_size.w + icon_size.w + 8);
+            total_height += @max(text_size.h, icon_size.h) + item_spacing;
+        }
+        total_height -= item_spacing; // Remove last spacing
+    }
+
+    // Position legend at top right of plot (physical coordinates)
+    const legend_rect = dvui.Rect.Physical{
+        .x = self.data_rs.r.x + self.data_rs.r.w - (max_width + padding.w + padding.x) * self.data_rs.s,
+        .y = self.data_rs.r.y + (padding.y) * self.data_rs.s,
+        .w = (max_width + padding.w + padding.x) * self.data_rs.s,
+        .h = (total_height + padding.h + padding.y) * self.data_rs.s,
+    };
+
+    // Check if mouse is inside legend
+    if (!legend_rect.contains(mouse_point)) {
+        return false;
+    }
+
+    // Check which item is hovered
+    var current_y: f32 = legend_rect.y + (padding.y) * self.data_rs.s;
+    if (self.items) |plot_items| {
+        for (plot_items.items) |plot_item| {
+            const text_size = font.textSize(plot_item.name);
+            const item_height = @max(text_size.h, icon_size.h) * self.data_rs.s;
+
+            // Calculate item rect for hover detection
+            const item_rect = dvui.Rect.Physical{
+                .x = legend_rect.x,
+                .y = current_y,
+                .w = legend_rect.w,
+                .h = item_height + item_spacing * self.data_rs.s,
+            };
+
+            // Check if mouse is hovering over this item
+            if (item_rect.contains(mouse_point)) {
+                // Check if this is the item we're looking for
+                return std.mem.eql(u8, plot_item.name, item_name);
+            }
+
+            current_y += item_height + item_spacing * self.data_rs.s;
+        }
+    }
+
+    return false;
+}
 
 pub fn bar(self: *PlotWidget, opts: BarOptions) void {
     const dp1 = Data{ .x = opts.x, .y = opts.y };
@@ -792,17 +1285,64 @@ pub fn bar(self: *PlotWidget, opts: BarOptions) void {
         }
     }
 
-    dvui.Path.fillConvex(
-        .{
-            .points = &.{
-                sp1,
-                .{ .x = sp2.x, .y = sp1.y },
-                sp2,
-                .{ .x = sp1.x, .y = sp2.y },
+    const color = opts.color orelse dvui.themeGet().focus;
+    // Add bar to items if it's not already there, or update color if it exists
+    var bar_exists = false;
+    var is_visible = true;
+    var is_hovered = false;
+    if (self.items) |*items| {
+        for (items.items) |*item| {
+            if (std.mem.eql(u8, item.name, opts.name)) {
+                item.color = color;
+                // Get visible state from data storage
+                const base_id = self.box.data().id;
+                const legend_id = base_id.update("legend");
+                const item_id = legend_id.update(opts.name);
+                is_visible = dvui.dataGet(null, item_id, "visible", bool) orelse true;
+                item.visible = is_visible;
+                // Check if mouse is hovering over this item's legend
+                is_hovered = self.isLegendItemHovered(opts.name);
+                item.hovered = is_hovered;
+                bar_exists = true;
+                break;
+            }
+        }
+        if (!bar_exists) {
+            items.append(.{ .name = opts.name, .color = color, .item_type = .bar, .visible = true }) catch unreachable;
+        }
+    }
+
+    // Only draw if visible
+    if (is_visible) {
+        // Increase size when hovered
+        const hover_scale: f32 = if (is_hovered) 1.1 else 1.0;
+
+        // Calculate center point
+        const center_x = (sp1.x + sp2.x) / 2;
+        const center_y = (sp1.y + sp2.y) / 2;
+
+        // Calculate new points with hover scale
+        const new_sp1 = dvui.Point.Physical{
+            .x = center_x - (center_x - sp1.x) * hover_scale,
+            .y = center_y - (center_y - sp1.y) * hover_scale,
+        };
+        const new_sp2 = dvui.Point.Physical{
+            .x = center_x + (sp2.x - center_x) * hover_scale,
+            .y = center_y + (sp2.y - center_y) * hover_scale,
+        };
+
+        dvui.Path.fillConvex(
+            .{
+                .points = &.{
+                    new_sp1,
+                    .{ .x = new_sp2.x, .y = new_sp1.y },
+                    new_sp2,
+                    .{ .x = new_sp1.x, .y = new_sp2.y },
+                },
             },
-        },
-        .{ .color = opts.color orelse dvui.themeGet().focus },
-    );
+            .{ .color = color },
+        );
+    }
 }
 
 pub fn deinit(self: *PlotWidget) void {
@@ -857,6 +1397,18 @@ pub fn deinit(self: *PlotWidget) void {
             .point => |p| self.hoverLabel("{d}, {d}", .{ p.x, p.y }),
             .bar => |b| self.hoverLabel("{d} to {d}, {d} to {d}", .{ b.x, b.x + b.w, b.y, b.y + b.h }),
         }
+    }
+
+    // Draw legend if enabled
+    if (self.legend_enabled and self.items != null and self.items.?.items.len > 0) {
+        var l = self.legend();
+        defer l.deinit();
+        l.draw();
+    }
+
+    // Free items memory
+    if (self.items) |*items| {
+        items.deinit();
     }
 
     self.box.deinit();

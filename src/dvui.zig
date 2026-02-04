@@ -5060,7 +5060,7 @@ pub fn plotXY(src: std.builtin.SourceLocation, init_opts: PlotXYOptions, opts: O
     const defaults: Options = .{ .padding = .{} };
     var p = dvui.plot(src, init_opts.plot_opts, defaults.override(opts));
 
-    var s1 = p.line();
+    var s1 = p.line("Plot");
     for (init_opts.xs, init_opts.ys) |x, y| {
         s1.point(x, y);
     }

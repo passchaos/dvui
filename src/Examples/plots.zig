@@ -72,10 +72,11 @@ pub fn plots() void {
             .y_axis = &Static.yaxis,
             .border_thick = 1.0,
             .mouse_hover = true,
+            .legend_enabled = true,
         }, .{ .expand = .both });
         defer plot.deinit();
 
-        var s1 = plot.line();
+        var s1 = plot.line("Sine Wave");
         defer s1.deinit();
 
         const points: usize = 1000;
@@ -203,10 +204,11 @@ pub fn plots() void {
             .y_axis = &S.yaxis,
             .border_thick = 2.0,
             .mouse_hover = true,
+            .legend_enabled = true,
         }, .{ .expand = .both });
         defer plot.deinit();
 
-        var s1 = plot.line();
+        var s1 = plot.line("Amplitude");
         defer s1.deinit();
 
         const start_exp: f64 = 0;
@@ -310,6 +312,7 @@ pub fn plots() void {
             .y_axis = &Static.yaxis,
             .border_thick = 2.0,
             .mouse_hover = true,
+            .legend_enabled = true,
         }, .{ .expand = .both });
         defer plot.deinit();
 
@@ -324,6 +327,127 @@ pub fn plots() void {
                 .color = if (valid) dvui.themeGet().focus else dvui.Color.red,
             });
         }
+    }
+
+    // Scatter plot example
+    {
+        const Static = struct {
+            var xaxis: dvui.PlotWidget.Axis = .{ .name = "X" };
+            var yaxis: dvui.PlotWidget.Axis = .{ .name = "Y" };
+        };
+
+        var vbox = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = 300, .h = 100 }, .expand = .ratio });
+        defer vbox.deinit();
+
+        var plot = dvui.plot(@src(), .{
+            .title = "Scatter Plot",
+            .x_axis = &Static.xaxis,
+            .y_axis = &Static.yaxis,
+            .border_thick = 1.0,
+            .mouse_hover = true,
+            .legend_enabled = true,
+        }, .{ .expand = .both });
+        defer plot.deinit();
+
+        var scatter = plot.scatter("Random Points");
+        defer scatter.deinit();
+
+        // Generate random scatter points
+        var default_prng: std.Random.DefaultPrng = .init(42);
+        const prng = default_prng.random();
+
+        for (0..50) |i| {
+            const x = @as(f64, @floatFromInt(i)) / 49.0;
+            const y = prng.floatNorm(f64) * 0.2 + x * x;
+            scatter.point(x, y);
+        }
+
+        scatter.draw(3, dvui.themeGet().focus);
+    }
+
+    // Area plot example
+    {
+        const Static = struct {
+            var xaxis: dvui.PlotWidget.Axis = .{ .name = "X" };
+            var yaxis: dvui.PlotWidget.Axis = .{ .name = "Y" };
+        };
+
+        var vbox = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = 300, .h = 100 }, .expand = .ratio });
+        defer vbox.deinit();
+
+        var plot = dvui.plot(@src(), .{
+            .title = "Area Plot",
+            .x_axis = &Static.xaxis,
+            .y_axis = &Static.yaxis,
+            .border_thick = 1.0,
+            .mouse_hover = true,
+            .legend_enabled = true,
+        }, .{ .expand = .both });
+        defer plot.deinit();
+
+        var area = plot.area("Sine Wave");
+        defer area.deinit();
+
+        // Generate sine wave data
+        const points: usize = 100;
+        for (0..points) |i| {
+            const x = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(points - 1));
+            const y = 0.5 * @sin(2.0 * std.math.pi * x * 3) + 0.5;
+            area.point(x, y);
+        }
+
+        // Set base to 0 and fill
+        const area_color = dvui.Color.fromHSLuv(200, 80, 60, 50);
+        const area_border_color = dvui.Color.fromHSLuv(200, 80, 60, 100);
+        area.setBase(0);
+        area.fill(area_color);
+        area.stroke(1, area_border_color);
+    }
+
+    // Multi-series plot with legend
+    {
+        const Static = struct {
+            var xaxis: dvui.PlotWidget.Axis = .{ .name = "X" };
+            var yaxis: dvui.PlotWidget.Axis = .{ .name = "Y" };
+        };
+
+        var vbox = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = 300, .h = 100 }, .expand = .ratio });
+        defer vbox.deinit();
+
+        var plot = dvui.plot(@src(), .{
+            .title = "Multi-series Plot",
+            .x_axis = &Static.xaxis,
+            .y_axis = &Static.yaxis,
+            .border_thick = 1.0,
+            .mouse_hover = true,
+            .legend_enabled = true,
+        }, .{ .expand = .both });
+        defer plot.deinit();
+
+        // Add sine wave
+        var sine_line = plot.line("Sine");
+        defer sine_line.deinit();
+        const sine_color = dvui.Color.fromHSLuv(0, 80, 60, 100);
+
+        const points: usize = 100;
+        for (0..points) |i| {
+            const x = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(points - 1)) * 10;
+            const y = @sin(x);
+            sine_line.point(x, y);
+        }
+        sine_line.stroke(2, sine_color);
+
+        // Add cosine wave
+        var cosine_line = plot.line("Cosine");
+        defer cosine_line.deinit();
+        const cosine_color = dvui.Color.fromHSLuv(200, 80, 60, 100);
+
+        for (0..points) |i| {
+            const x = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(points - 1)) * 10;
+            const y = @cos(x);
+            cosine_line.point(x, y);
+        }
+        cosine_line.stroke(2, cosine_color);
     }
 }
 

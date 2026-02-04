@@ -1236,7 +1236,7 @@ pub fn gridNavigation() void {
         defer plot.deinit();
         const thick = 2;
         {
-            var s1 = plot.line();
+            var s1 = plot.line("Line 1");
             defer s1.deinit();
             for (local.data.items(.x), local.data.items(.y1)) |x, y| {
                 s1.point(x, y);
@@ -1244,7 +1244,7 @@ pub fn gridNavigation() void {
             s1.stroke(thick, .red);
         }
         {
-            var s2 = plot.line();
+            var s2 = plot.line("Line 2");
             defer s2.deinit();
             for (local.data.items(.x), local.data.items(.y2)) |x, y| {
                 s2.point(x, y);
