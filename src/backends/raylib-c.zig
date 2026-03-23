@@ -209,7 +209,7 @@ pub fn contentScale(_: *RaylibBackend) f32 {
     return 1.0;
 }
 
-pub fn drawClippedTriangles(self: *RaylibBackend, texture: ?dvui.Texture, vtx: []const dvui.Vertex, idx: []const u16, clipr_in: ?dvui.Rect.Physical) !void {
+pub fn drawClippedTriangles(self: *RaylibBackend, texture: ?dvui.Texture, vtx: []const dvui.Vertex, idx: []const dvui.Vertex.Index, clipr_in: ?dvui.Rect.Physical) !void {
 
     //make sure all raylib draw calls are rendered
     //before rendering dvui elements
