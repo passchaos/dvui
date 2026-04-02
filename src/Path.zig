@@ -202,9 +202,9 @@ pub fn fillConvexTriangles(path: Path, allocator: std.mem.Allocator, opts: FillC
 
     var i: usize = 0;
     while (i < path.points.len) : (i += 1) {
-        const ai: usize = @intCast((i + path.points.len - 1) % path.points.len);
-        const bi: usize = @intCast(i % path.points.len);
-        const ci: usize = @intCast((i + 1) % path.points.len);
+        const ai: u32 = @intCast((i + path.points.len - 1) % path.points.len);
+        const bi: u32 = @intCast(i % path.points.len);
+        const ci: u32 = @intCast((i + 1) % path.points.len);
         const aa = path.points[ai];
         const bb = path.points[bi];
         const cc = path.points[ci];
@@ -384,8 +384,8 @@ pub fn strokeTriangles(path: Path, allocator: std.mem.Allocator, opts: StrokeOpt
     const col: Color.PMA = .fromColor(opts.color);
 
     const aa_size = 1.0;
-    var vtx_left: usize = 0;
-    var vtx_right: usize = 0;
+    var vtx_left: u32 = 0;
+    var vtx_right: u32 = 0;
     var i: usize = 0;
     const last_i: usize = if (closed) path.points.len + 1 else path.points.len;
     while (i < last_i) : (i += 1) {
@@ -488,7 +488,7 @@ pub fn strokeTriangles(path: Path, allocator: std.mem.Allocator, opts: StrokeOpt
             }
         }
 
-        const vtx_base: usize = if (i == path.points.len) 0 else @intCast(builder.vertexes.items.len);
+        const vtx_base: u32 = if (i == path.points.len) 0 else @intCast(builder.vertexes.items.len);
         var vtx_left_in = vtx_base;
         var vtx_right_in = vtx_left_in + 2;
 
@@ -682,7 +682,7 @@ pub fn strokeTriangles(path: Path, allocator: std.mem.Allocator, opts: StrokeOpt
         if (!closed and (i + 1) == path.points.len) {
             // add 2 extra vertexes for endcap fringe
 
-            const vtx: usize = @intCast(builder.vertexes.items.len);
+            const vtx: u32 = @intCast(builder.vertexes.items.len);
             builder.appendVertex(.{
                 .pos = .{
                     .x = bb.x - halfnorm.x * (opts.thickness + aa_size) - diffab.x * aa_size,
