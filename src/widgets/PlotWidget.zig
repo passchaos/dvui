@@ -188,7 +188,10 @@ pub const Axis = struct {
         const approximate_step = (max - min) / @as(f64, @floatFromInt(tick_num_suggestion));
         const nice_step = niceStep(approximate_step);
 
+        if (nice_step == 0) return Ticks.empty;
+
         const first_tick = std.math.ceil(min / nice_step) * nice_step;
+
         const tick_count_best: usize = @intFromFloat(std.math.ceil((max - first_tick) / nice_step));
 
         const tick_count = @min(tick_num_max, tick_count_best);
